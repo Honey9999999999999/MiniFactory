@@ -1,69 +1,92 @@
-//using UnityEngine;
-//using UnityEngine.Purchasing;
-//using System;
+using System;
+using System.Linq;
+using Unity.Services.Core;
+using UnityEngine;
+using UnityEngine.Purchasing;
 
-//public class UnityIapService : IIapService
-//{
-//    // Использован StoreController вместо устаревшего IStoreController
-//    private StoreController storeController;
+public class UnityIapService : IIapService
+{
+    private StoreController storeController;
 
-//    private Action<string> purchaseSuccessCallback;
-//    private Action<string, string> purchaseFailedCallback;
+    private Action<string> purchaseSuccessCallback;
+    private Action<string, string> purchaseFailedCallback;
 
-//    public const string ProductCoinsPackSmall = "coins_pack_small";
+    public const string ProductCoinsPackSmall = "coins_pack_small";
 
-//    public async void Initialize(Action<string> onPurchaseSuccess, Action<string, string> onPurchaseFailed)
-//    {
-//        this.purchaseSuccessCallback = onPurchaseSuccess;
-//        this.purchaseFailedCallback = onPurchaseFailed;
+    public async void Initialize(Action<string> onPurchaseSuccess, Action<string, string> onPurchaseFailed)
+    {
+        this.purchaseSuccessCallback = onPurchaseSuccess;
+        this.purchaseFailedCallback = onPurchaseFailed;
 
-//        try
-//        {
-//            var builder = ConfigurationBuilder.Instance(StandardPurchasingModule.Instance());
-//            builder.AddProduct(ProductCoinsPackSmall, ProductType.Consumable);
+        try
+        {
+            if (UnityServices.State == ServicesInitializationState.Uninitialized)
+            {
+                await UnityServices.InitializeAsync();
+            }
 
-//            // Асинхронное подключение возвращает актуальный StoreController в IAP v5
-//            storeController = await UnityIAPServices.Connect(builder);
+            CatalogProvider catalogProvider = new CatalogProvider();
+            catalogProvider.AddProduct(ProductCoinsPackSmall, ProductType.Consumable);
 
-//            // Подписка на новые жизненные циклы заказов
-//            storeController.OnOrderConfirmed += OnOrderConfirmed;
-//            storeController.OnPurchaseFailed += OnPurchaseOrderFailed;
+            var products = catalogProvider.GetProducts();
 
-//            Debug.Log("Unity IAP v5 успешно инициализирован асинхронно.");
-//        }
-//        catch (Exception ex)
-//        {
-//            Debug.LogError($"Ошибка инициализации Unity IAP v5: {ex.Message}");
-//            purchaseFailedCallback?.Invoke("all", $"Init Failed: {ex.Message}");
-//        }
-//    }
+            storeController = UnityIAPServices.StoreController();
 
-//    public void BuyConsumable(string productId)
-//    {
-//        if (storeController != null)
-//        {
-//            // Запуск покупки через метод нового StoreController
-//            storeController.PurchaseProduct(productId);
-//        }
-//        else
-//        {
-//            purchaseFailedCallback?.Invoke(productId, "IAP Service не инициализирован.");
-//        }
-//    }
+            Debug.Log("Подключение к магазину...");
+            await storeController.Connect();
 
-//    private void OnOrderConfirmed(ConfirmedOrder order)
-//    {
-//        string id = order.productId;
-//        purchaseSuccessCallback?.Invoke(id);
 
-//        // Подтверждаем транзакцию для завершения цикла на стороне платформы
-//        order.Confirm();
-//    }
+            Debug.Log("Загрузка продуктов...");
+            storeController.FetchProducts(products);
 
-//    private void OnPurchaseOrderFailed(FailedOrder failedOrder)
-//    {
-//        string id = failedOrder.productId;
-//        string reasonDescription = failedOrder.failureDescription.message;
-//        purchaseFailedCallback?.Invoke(id, reasonDescription);
-//    }
-//}
+            storeController.OnPurchasePending += HandlePurchasePending;
+            storeController.OnPurchasesFetched += HandlePurchasesFetched;
+
+            Debug.Log("Unity IAP инициализирован.");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"Ошибка инициализации Unity IAP: {ex.Message}");
+            purchaseFailedCallback?.Invoke("all", $"Init Failed: {ex.Message}");
+        }
+    }
+
+    private void HandlePurchasePending(PendingOrder order)
+    {
+        var transactionId = order.Info.TransactionID;
+        Debug.Log($"[IAP] Покупка в процессе. ID Транзакции: {transactionId}");
+
+        var cartItem = order.CartOrdered.Items().FirstOrDefault();
+        if (cartItem == null)
+        {
+            Debug.LogError("[IAP] Ошибка: Корзина заказа пуста!");
+            return;
+        }
+
+        purchaseSuccessCallback.Invoke(cartItem.Product.definition.id);
+
+        storeController.ConfirmPurchase(order);
+    }
+
+    private void HandlePurchasesFetched(Orders orders)
+    {
+        foreach (var order in orders.ConfirmedOrders)
+        {
+            order.Info.PurchasedProductInfo.ForEach(o => Debug.Log($"Найдена существующая покупка: {o.productId}"));
+
+            // По идеи логика восстановления .-.
+        }
+    }
+
+    public void BuyConsumable(string productId)
+    {
+        if (storeController != null)
+        {
+            storeController.PurchaseProduct(productId);
+        }
+        else
+        {
+            purchaseFailedCallback?.Invoke(productId, "IAP Service не инициализирован.");
+        }
+    }
+}

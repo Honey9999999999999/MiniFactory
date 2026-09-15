@@ -4,9 +4,12 @@ using UnityEngine;
 
 public class FactoryManager : MonoBehaviour
 {
-    [SerializeField] private GameConfig localConfig;
+    private const String SAVE_NAME = "FactorySave";
 
-    private IGameConfig config;
+    [SerializeField] private GameConfig localConfig;
+    public IGameConfig config => _config;
+    private IGameConfig _config;
+
     private PlayerSaveData saveData;
 
     public double Balance => saveData.balance;
@@ -17,7 +20,7 @@ public class FactoryManager : MonoBehaviour
 
     private void Awake()
     {
-        config = localConfig; // Легко заменить на Remote Config внедрением зависимости
+        _config = localConfig;
         LoadGame();
     }
 
@@ -29,7 +32,7 @@ public class FactoryManager : MonoBehaviour
     private void TickProduction(float deltaTime)
     {
         double totalProd = CalculateTotalProduction();
-        double multiplier = IsBoostActive ? config.BoostMultiplier : 1.0;
+        double multiplier = IsBoostActive ? _config.BoostMultiplier : 1.0;
 
         saveData.balance += totalProd * multiplier * deltaTime;
         OnDataChanged?.Invoke();
@@ -78,13 +81,9 @@ public class FactoryManager : MonoBehaviour
 
     public void ActivateBoost()
     {
-        if (!config.IsBoostEnabled) return;
+        if (!_config.IsBoostEnabled || IsBoostActive) return;
 
-        if (IsBoostActive)
-            BoostEndTime = BoostEndTime.Value.AddSeconds(config.BoostDuration);
-        else
-            BoostEndTime = DateTime.UtcNow.AddSeconds(config.BoostDuration);
-
+        BoostEndTime = DateTime.UtcNow.AddSeconds(_config.BoostDuration);
         OnDataChanged?.Invoke();
     }
 
@@ -101,7 +100,7 @@ public class FactoryManager : MonoBehaviour
     }
 
     public MachineConfig GetMachineConfig(string id) =>
-        ((List<MachineConfig>)config.Machines).Find(m => m.machineId == id);
+        ((List<MachineConfig>)_config.Machines).Find(m => m.machineId == id);
 
     public MachineState GetMachineState(string id) =>
         saveData.machineStates.Find(s => s.machineId == id);
@@ -110,7 +109,7 @@ public class FactoryManager : MonoBehaviour
 
     private void LoadGame()
     {
-        string json = PlayerPrefs.GetString("FactorySave", string.Empty);
+        string json = PlayerPrefs.GetString(SAVE_NAME, string.Empty);
         if (string.IsNullOrEmpty(json))
         {
             InitNewGame();
@@ -125,12 +124,12 @@ public class FactoryManager : MonoBehaviour
     private void InitNewGame()
     {
         saveData = new PlayerSaveData();
-        for (int i = 0; i < config.Machines.Count; i++)
+        for (int i = 0; i < _config.Machines.Count; i++)
         {
             saveData.machineStates.Add(new MachineState
             {
-                machineId = config.Machines[i].machineId,
-                isUnlocked = (i == 0), // Первая машина открыта сразу
+                machineId = _config.Machines[i].machineId,
+                isUnlocked = (i == 0),
                 level = 1
             });
         }
@@ -143,14 +142,8 @@ public class FactoryManager : MonoBehaviour
         DateTime lastSave = DateTime.Parse(saveData.lastSaveTime);
         TimeSpan offlineSpan = DateTime.UtcNow - lastSave;
 
-        double totalSeconds = offlineSpan.TotalSeconds;
-        if (totalSeconds <= 0) return;
+        double totalSeconds = Math.Clamp(offlineSpan.TotalSeconds, 0, _config.MaxOfflineProductionTime);
 
-        // Ограничение максимального времени оффлайна
-        if (totalSeconds > config.MaxOfflineProductionTime)
-            totalSeconds = config.MaxOfflineProductionTime;
-
-        // Расчет буста в оффлайне
         double offlineIncome = 0;
         double totalProd = CalculateTotalProduction();
 
@@ -164,7 +157,7 @@ public class FactoryManager : MonoBehaviour
                 double remainingBoostSeconds = (boostEnd - lastSave).TotalSeconds;
                 double boostSecondsApplied = Math.Min(totalSeconds, remainingBoostSeconds);
 
-                offlineIncome += totalProd * config.BoostMultiplier * boostSecondsApplied;
+                offlineIncome += totalProd * _config.BoostMultiplier * boostSecondsApplied;
                 totalSeconds -= boostSecondsApplied;
             }
         }
@@ -182,7 +175,7 @@ public class FactoryManager : MonoBehaviour
     {
         saveData.lastSaveTime = DateTime.UtcNow.ToString();
         saveData.boostEndTime = BoostEndTime.HasValue ? BoostEndTime.Value.ToString() : string.Empty;
-        PlayerPrefs.SetString("FactorySave", JsonUtility.ToJson(saveData));
+        PlayerPrefs.SetString(SAVE_NAME, JsonUtility.ToJson(saveData));
         PlayerPrefs.Save();
     }
     #endregion
